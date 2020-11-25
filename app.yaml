@@ -1,0 +1,351 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: VPC template for Project X
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Environment
+      Parameters:
+        - EnvironmentType
+    - Label:
+        default: Network Configuration
+      Parameters:
+      - VPCID
+      - PublicSubnet1Id
+      - PublicSubnet2Id
+      - PublicSubnet3Id
+      - PrivateSubnet1Id
+      - PrivateSubnet2Id
+      - PrivateSubnet3Id
+      - BastionSecurityGroup
+      - ALBAccessCIDR
+      - AgilePartnerCert
+    - Label:
+        default: App Instance Configuration
+      Parameters:
+      - ServerInstanceType
+      - KeyPairName
+    ParameterLabels:
+      VPCID:
+        default: VPC ID
+      PublicSubnet1Id:
+        default: Public subnet 1 ID
+      Public subnet 2 ID:
+        default: Public subnet 2 ID
+      Public subnet 3 ID:
+        default: Public subnet 3 ID
+      PrivateSubnet1Id:
+        default: Private subnet 1 ID
+      Private subnet 2 ID:
+        default: Private subnet 2 ID
+      Private subnet 3 ID:
+        default: Private subnet 3 ID
+      BastionSecurityGroup:
+        default: Bastion security group ID
+      KeyPairName:
+        default: Key pair name
+      ALBAccessCIDR:
+        default: ALB access CIDR
+      AgilePartnerCert:
+        default: Valid SSL certificate
+      ServerInstanceType:
+        default: App node instance type
+      EnvironmentType:
+        default: Environment Type
+
+Parameters:
+  VPCID:
+    Description: A VPC ID
+    Type: String
+  PublicSubnet1Id:
+    Description: public DMZ subnet 1 ID located in Availability Zone 1
+    Type: String
+  PublicSubnet2Id:
+    Description: public DMZ subnet 2 ID located in Availability Zone 2
+    Type: String
+  PublicSubnet3Id:
+    Description: public DMZ subnet 3 ID located in Availability Zone 3
+    Type: String
+  PrivateSubnet1Id:
+    Description: private DMZ subnet 1 ID located in Availability Zone 1
+    Type: String
+  PrivateSubnet2Id:
+    Description: private DMZ subnet 2 ID located in Availability Zone 2
+    Type: String
+  PrivateSubnet3Id:
+    Description: private DMZ subnet 3 ID located in Availability Zone 3
+    Type: String
+  BastionSecurityGroup:
+    Description: Bastion security group ID
+    Type: String
+  KeyPairName: 
+    Description: Amazon EC2 Key Pair
+    Type: "AWS::EC2::KeyPair::KeyName"
+    ConstraintDescription: must be a valid Key Pair
+  ALBAccessCIDR:
+    Description: ALB access CIDR
+    Type: String
+    Default: 0.0.0.0/0
+  AgilePartnerCert:
+    Description: Agile Partner SSL Certificate ARN
+    Type: String
+    ConstraintDescription: must be a valid Certificate ARN
+  ServerInstanceType:
+    AllowedValues:
+    - t2.micro
+    - t2.small
+    - t2.medium
+    - t2.large
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - c4.large
+    - c4.xlarge
+    - c4.2xlarge
+    - c4.4xlarge
+    - c4.8xlarge
+    - c3.large
+    - c3.xlarge
+    - c3.2xlarge
+    - c3.4xlarge
+    - c3.8xlarge
+    - r3.large
+    - r3.xlarge
+    - r3.2xlarge
+    - r3.4xlarge
+    - r3.8xlarge
+    - i2.xlarge
+    - i2.2xlarge
+    - i2.4xlarge
+    - i2.8xlarge
+    ConstraintDescription: Choose an instance type.
+    Default: t2.micro
+    Description: App node node instance type
+    Type: String
+  EnvironmentType: 
+      Description: The environment type
+      Type: String
+      Default: dev
+      AllowedValues: 
+        - prod
+        - dev
+      ConstraintDescription: must be a prod or dev
+
+Mappings: 
+  RegionMap:
+      eu-west-1:
+        dev: ami-0172c7e8739ccb954
+
+Resources:
+  PrivateHostSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VPCID
+      GroupDescription: Enable SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: ProjectXPrivateHostSG
+
+  DeployAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+          - RegionMap
+          - Ref: AWS::Region
+          - Ref: EnvironmentType
+      InstanceType: !Ref ServerInstanceType
+      KeyName: !Ref KeyPairName
+      SecurityGroups:
+        - !Ref PrivateHostSecurityGroup
+            
+  DeployAppASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1Id
+        - !Ref PrivateSubnet2Id
+        - !Ref PrivateSubnet3Id
+      DesiredCapacity: 1
+      LaunchConfigurationName: !Ref DeployAppLaunchConfig
+      TargetGroupARNs:
+        - !Ref WebAppTargetGroup
+        - !Ref WebAppSecureTargetGroup
+      MaxSize: 2
+      MinSize: 1
+      Tags:
+          - Key: Name
+            Value: ProjectXASG
+            PropagateAtLaunch: True
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: True
+
+  AppScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref DeployAppASG
+      Cooldown: '60'
+      ScalingAdjustment: 1
+
+  AppScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref DeployAppASG
+      Cooldown: '300'
+      ScalingAdjustment: -1
+  
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-up if CPU > 80% for 5 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      AlarmActions: [!Ref AppScaleUpPolicy]
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref DeployAppASG
+      ComparisonOperator: GreaterThanThreshold
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scale-down if CPU < 60% for 5 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      AlarmActions: [!Ref AppScaleDownPolicy]
+      Dimensions:
+      - Name: AutoScalingGroupName
+        Value: !Ref DeployAppASG
+      ComparisonOperator: LessThanThreshold
+
+  ALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VPCID
+      GroupDescription: Enable HTTP/HTTPS access
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref ALBAccessCIDR
+        - IpProtocol: 'tcp'
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: !Ref ALBAccessCIDR
+      Tags:
+        - Key: Name
+          Value: ProjectXALBSG
+
+  WebAppALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+        - !Ref PublicSubnet3Id
+      Tags:
+        - Key: Name
+          Value: ProjectXALB
+      Type: application
+  
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppALB
+      Port: '80'
+      Protocol: HTTP
+
+  SecureListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppSecureTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppALB
+      Port: '443'
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref AgilePartnerCert
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: '80'
+      Protocol: 'HTTP'
+      VpcId: !Ref VPCID
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Tags:
+        - Key: Name
+          Value: ProjectXWebAppTG
+
+  WebAppSecureTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: '443'
+      Protocol: 'HTTPS'
+      VpcId: !Ref VPCID
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckPort: 443
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Tags:
+        - Key: Name
+          Value: ProjectXSecureTG
+
+Outputs:
+  ProjectXALBDNS:
+    Description: Web App ALB DNS Name 
+    Value:
+      Fn::Join:
+        - ''
+        - - "http://"
+          - Fn::GetAtt: WebAppALB.DNSName
